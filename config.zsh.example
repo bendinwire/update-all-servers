@@ -1,0 +1,31 @@
+# config.zsh.example — copy to config.zsh and fill in your values
+
+# ── Mac Hosts ──────────────────────────────────────────────────────────
+HOST_MACMINI="macmini.local"
+HOST_JFMACMINI="jfmacmini.local"
+HOST_MBP="mbp.local"
+HOST_MBA13="mba13.local"
+HOST_MBA15="mba15.local"
+HOST_ELSAMBA="user@hostname.local"
+HOST_IMACPRO="user@hostname.local"
+
+# ── Servers ────────────────────────────────────────────────────────────
+HOST_PROXMOX="root@192.168.1.x"
+HOST_TLB="user@your-server.example.com"
+HOST_BEELINK="user@1.2.3.4 -p 22222"
+
+# ── Raspberry Pis ──────────────────────────────────────────────────────
+HOST_QTPI="qtpi.local"
+HOST_POOLPI="poolpi.local"
+HOST_CHICKENPI="chickenpi.local"
+HOST_GATEPI="gate.local"
+
+# ── Docker Compose search paths (checked on docker hosts) ──────────────
+DOCKER_COMPOSE_DIRS=(
+  "/home/youruser/docker_containers"
+  "/opt/media-stack"
+)
+
+# ── Email ──────────────────────────────────────────────────────────────
+EMAIL_TO="you@example.com"
+EMAIL_FROM="you@example.com"
