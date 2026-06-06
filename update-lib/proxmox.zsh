@@ -6,6 +6,7 @@
 
 update_proxmox() {
 cat <<'EOF'
+export LC_ALL=C LANGUAGE= LANG=C
 
 apt-get update &&
 DEBIAN_FRONTEND=noninteractive apt-get -y dist-upgrade &&
