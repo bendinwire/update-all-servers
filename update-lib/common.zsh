@@ -40,8 +40,12 @@ run_ssh_timed() {
     local host="$2"
     local cmd="$3"
 
+    local ssh_key="${HOME}/.ssh/id_ed25519"
+    [[ ! -f "$ssh_key" ]] && ssh_key="${HOME}/.ssh/id_rsa"
+
     if command -v gtimeout >/dev/null 2>&1; then
         gtimeout "${timeout_secs}s" ssh \
+            -i "$ssh_key" \
             -o ConnectTimeout="$SSH_CONNECT_TIMEOUT" \
             -o BatchMode=yes \
             -o ConnectionAttempts=1 \
@@ -50,6 +54,7 @@ run_ssh_timed() {
             ${(z)host} "$cmd"
     else
         ssh \
+            -i "$ssh_key" \
             -o ConnectTimeout="$SSH_CONNECT_TIMEOUT" \
             -o BatchMode=yes \
             -o ConnectionAttempts=1 \
