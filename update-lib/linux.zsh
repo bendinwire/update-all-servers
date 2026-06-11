@@ -4,7 +4,7 @@ update_linux() {
 cat <<'EOF'
 export LC_ALL=C LANGUAGE= LANG=C
 sudo apt-get update &&
-sudo DEBIAN_FRONTEND=noninteractive apt-get -y dist-upgrade &&
+sudo apt-get -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" dist-upgrade &&
 sudo apt-get -y autoremove &&
 sudo apt-get clean
 
