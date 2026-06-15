@@ -9,7 +9,7 @@ cat <<'EOF'
 export LC_ALL=C LANGUAGE= LANG=C
 
 apt-get update &&
-DEBIAN_FRONTEND=noninteractive apt-get -y dist-upgrade &&
+apt-get -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" dist-upgrade &&
 apt-get -y autoremove &&
 apt-get clean
 
@@ -24,10 +24,17 @@ do
         echo "Updating CT $CTID"
 
         pct exec $CTID -- bash -c '
+            export LC_ALL=C LANGUAGE= LANG=C
             apt-get update &&
-            DEBIAN_FRONTEND=noninteractive apt-get -y dist-upgrade &&
+            apt-get -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" dist-upgrade &&
             apt-get -y autoremove &&
             apt-get clean
+
+            # Pull any Docker Compose stacks running in this CT
+            for DIR in $(find /opt /root /home -maxdepth 4 -name "docker-compose.yml" -o -name "compose.yml" 2>/dev/null | xargs -I{} dirname {} | sort -u); do
+                echo "🐳 Pulling Docker stack in $DIR"
+                cd "$DIR" && docker compose pull && docker compose up -d --remove-orphans || true
+            done
         '
     fi
 done
