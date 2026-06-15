@@ -55,8 +55,9 @@ do
     [ "$STATUS" != "running" ] && continue
 
     qm guest exec "$VMID" -- bash -lc '
+        export LC_ALL=C LANGUAGE= LANG=C
         apt-get update &&
-        DEBIAN_FRONTEND=noninteractive apt-get -y dist-upgrade &&
+        apt-get -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" dist-upgrade &&
         apt-get -y autoremove &&
         apt-get clean
     ' || echo "Guest agent missing on VM $VMID"

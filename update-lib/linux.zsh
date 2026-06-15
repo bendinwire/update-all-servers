@@ -8,6 +8,10 @@ sudo apt-get -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force
 sudo apt-get -y autoremove &&
 sudo apt-get clean
 
+if command -v snap >/dev/null 2>&1; then
+    sudo snap refresh || true
+fi
+
 if [ -d "$HOME/.oh-my-zsh" ]; then
     export DISABLE_UPDATE_PROMPT=true
     "$HOME/.oh-my-zsh/tools/upgrade.sh"

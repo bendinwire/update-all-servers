@@ -47,6 +47,7 @@ if command -v brew >/dev/null 2>&1; then
   else
     echo "No outdated casks."
   fi &&
+  brew autoremove &&
   brew cleanup
 else
   echo "⚠️ brew not found"
