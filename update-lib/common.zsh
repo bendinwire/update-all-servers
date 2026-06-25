@@ -48,6 +48,7 @@ run_ssh_timed() {
             -i "$ssh_key" \
             -o ConnectTimeout="$SSH_CONNECT_TIMEOUT" \
             -o BatchMode=yes \
+            -o StrictHostKeyChecking=accept-new \
             -o ConnectionAttempts=1 \
             -o ServerAliveInterval=5 \
             -o ServerAliveCountMax=1 \
@@ -57,6 +58,7 @@ run_ssh_timed() {
             -i "$ssh_key" \
             -o ConnectTimeout="$SSH_CONNECT_TIMEOUT" \
             -o BatchMode=yes \
+            -o StrictHostKeyChecking=accept-new \
             -o ConnectionAttempts=1 \
             -o ServerAliveInterval=5 \
             -o ServerAliveCountMax=1 \
