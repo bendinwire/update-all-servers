@@ -76,7 +76,8 @@ $(update_ohmyzsh_linux)"
 $(update_ohmyzsh_linux)"
 
   "PoolPi"         "$(update_linux)
-$(update_ohmyzsh_linux)"
+$(update_ohmyzsh_linux)
+$(update_docker_host)"
 
   "ChickenPi"      "$(update_linux)
 $(update_ohmyzsh_linux)
@@ -142,9 +143,16 @@ for name in "${ORDER[@]}"; do
   if [[ $ssh_ok -eq 0 ]]; then
     echo "✅ Finished updating $name"
     check_disk_usage "$host" 2>&1 | tee -a "$TMPLOG"
+  elif grep -qiE 'operation timed out|connection timed out|could not resolve hostname|no route to host|connection refused|host is down|network is unreachable' "$TMPLOG"; then
+    # Host simply isn't reachable — almost always a laptop asleep or a
+    # machine powered off. Not a script failure; report it softly.
+    echo "💤 $name unreachable (asleep or powered off)"
+    ISSUE_SUMMARY+=("💤  $name — unreachable (asleep/off)")
+    rm -f "$TMPLOG"
+    continue
   else
     big_error "Failed updating $name ($host)"
-    ISSUE_SUMMARY+=("🚨  $name — connection failed or timed out")
+    ISSUE_SUMMARY+=("🚨  $name — update failed (see full log)")
   fi
 
   # Collect notable lines for summary
