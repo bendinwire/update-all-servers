@@ -28,18 +28,25 @@ do
     do
         DIR=\$(dirname "\$FILE")
 
+        cd "\$DIR" || continue
+        docker compose version >/dev/null 2>&1 || continue
+
+        # Only update stacks that are ALREADY running. Don't start dormant or
+        # alternate stacks we happen to find on disk — e.g. a source repo's
+        # bundled compose file for a service that actually runs natively
+        # (PoolPi's nodejs-poolController vs. the native njsPC on :4200).
+        if [ -z "\$(docker compose ps -q 2>/dev/null)" ]; then
+            echo "⏭️  Skipping \$DIR (no running containers)"
+            continue
+        fi
+
         echo ""
         echo "🐳 Updating: \$DIR"
+        docker compose pull
+        docker compose up -d --remove-orphans
 
-        cd "\$DIR" || continue
-
-        if docker compose version >/dev/null 2>&1; then
-            docker compose pull
-            docker compose up -d --remove-orphans
-
-            echo ""
-            docker compose ps
-        fi
+        echo ""
+        docker compose ps
     done
 done
 
