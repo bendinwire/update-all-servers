@@ -56,12 +56,25 @@ fi
 $(update_ohmyzsh_mac)
 
 echo ""
-echo "🖥️ Checking macOS/CLT updates..."
-updates=\$(softwareupdate -l 2>/dev/null)
-if echo "\$updates" | grep -q "No new software available"; then
+echo "🖥️ Checking macOS/CLT updates (betas excluded)..."
+raw=\$(softwareupdate -l 2>/dev/null)
+# Drop beta items so they are never surfaced, flagged, or (if install is ever
+# enabled) installed. Each softwareupdate item is a "* Label:" line followed by
+# an indented "Title:" line; skip the pair when either mentions "beta".
+filtered=\$(echo "\$raw" | awk '
+  /^\* Label:/ { lbl=\$0; getline ttl; if (tolower(lbl ttl) ~ /beta/) next; print lbl; print ttl; next }
+  { print }
+')
+if echo "\$raw" | grep -q "No new software available"; then
   echo "No new software available."
+elif echo "\$filtered" | grep -q "^\* Label:"; then
+  echo "\$filtered"
 else
-  echo "\$updates"
+  echo "No new (non-beta) software available."
+fi
+nbeta=\$(echo "\$raw" | grep -icE 'Label:.*beta')
+if [ "\$nbeta" -gt 0 ]; then
+  echo "ℹ️  \$nbeta beta update(s) skipped (not installed, not reported)."
 fi
 
 EOF
