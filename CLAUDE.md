@@ -14,7 +14,7 @@ It SSHes into every homelab host (Macs, Linux, Docker, Proxmox, Pis), runs
 per-OS update routines, prints/writes a summary, and emails it on `--all` runs.
 
 Cron (Mon/Thu 03:00 + weekdays 12:00) runs `~/bin/update_all_servers.zsh --all`.
-Logs: `~/logs/update_all_servers.log` (newest run prepended).
+Logs: `~/Library/Logs/update_all_servers.log` (newest run prepended).
 
 Full write-up (schedule, behavior, gotchas, host list):
 `~/Developer/homelab/FLEET_UPDATER.md` — read it first.

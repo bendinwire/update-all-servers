@@ -24,7 +24,9 @@ source "$LIB_DIR/proxmox.zsh"
 UPDATE_ALL=false
 [[ "$1" == "--all" || "$1" == "-y" || "$1" == "--yes" ]] && UPDATE_ALL=true
 
-LOG_FILE="$HOME/logs/update_all_servers.log"
+# ~/Library/Logs, not ~/logs: keeps the home folder clean, and Console.app finds it.
+LOG_FILE="$HOME/Library/Logs/update_all_servers.log"
+mkdir -p "${LOG_FILE:h}"
 RUN_LOG=$(mktemp -t update-run)
 
 # Capture all output to RUN_LOG while still printing to terminal

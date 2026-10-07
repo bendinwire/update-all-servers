@@ -11,7 +11,7 @@ A collection of zsh scripts that remotely update a fleet of Macs, Linux servers,
 - Checks disk usage on every host and warns on low free space
 - Collects warnings/errors into a summary at the top of the log
 - Emails the summary on unattended (`--all`) runs via msmtp
-- Prepends each run's entry to `~/logs/update_all_servers.log`
+- Prepends each run's entry to `~/Library/Logs/update_all_servers.log`
 
 ## Requirements
 
