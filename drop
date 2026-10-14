@@ -198,11 +198,40 @@ upload_parallel() { # upload_parallel <local file> <remote dir> <size> <label>
   local rfile_q; rfile_q=$(printf '%q' "$rdir/$base")
   local bs=1048576 n=$PARALLEL_STREAMS
   local total_blocks=$(( (size + bs - 1) / bs ))
-  local per=$(( (total_blocks + n - 1) / n ))
   local -a pids=() skips=() counts=()
   local i skip count
 
-  ssh "$HOST" "rm -f -- $rtmp_q && truncate -s $size -- $rtmp_q" || { echo "could not create $rtmp on the server" >&2; return 1; }
+  # Resume: an earlier upload (scp writes sequentially) may have left a shorter file under the real name.
+  # If its first whole 1 MiB blocks hash the same as ours, keep them and send only the rest.
+  local start_block=0 resumed=0 vbytes=0 rsz lh rh
+  rsz=$(ssh "$HOST" "stat -c %s -- $rfile_q 2>/dev/null" || true)
+  if [[ "$rsz" == <-> ]] && [ "$rsz" -ge $((8 * bs)) ] && [ "$rsz" -lt "$size" ]; then
+    vbytes=$(( (rsz / bs) * bs ))
+    lh=$(head -c $vbytes -- "$f" | shasum -a 256 | cut -d' ' -f1)
+    rh=$(ssh "$HOST" "head -c $vbytes -- $rfile_q | sha256sum" | cut -d' ' -f1)
+    if [ "$lh" = "$rh" ]; then
+      start_block=$(( vbytes / bs )); resumed=1
+      echo "-> resuming at $(human $vbytes) of $(human $size) (existing part verified)"
+      ssh "$HOST" "mv -f -- $rfile_q $rtmp_q && truncate -s $size -- $rtmp_q" || resumed=0
+    else
+      echo "-> existing partial file does not match; starting over"
+    fi
+  fi
+  if [ $resumed -eq 0 ]; then
+    start_block=0
+    ssh "$HOST" "rm -f -- $rtmp_q && truncate -s $size -- $rtmp_q" || { echo "could not create $rtmp on the server" >&2; return 1; }
+  fi
+  local per=$(( (total_blocks - start_block + n - 1) / n ))
+
+  # On failure after a resume, put the verified prefix back under the real name (as a shorter file, so it
+  # still reads as partial) instead of throwing it away.
+  _fail() {
+    if [ $resumed -eq 1 ]; then
+      ssh "$HOST" "truncate -s $vbytes -- $rtmp_q && mv -f -- $rtmp_q $rfile_q"
+    else
+      ssh "$HOST" "rm -f -- $rtmp_q"
+    fi
+  }
 
   _slice() { # _slice <skip> <count>: stream one slice, retrying up to 3 times
     local k=$1 c=$2 tries=0
@@ -217,7 +246,7 @@ upload_parallel() { # upload_parallel <local file> <remote dir> <size> <label>
   }
 
   for (( i = 0; i < n; i++ )); do
-    skip=$(( i * per ))
+    skip=$(( start_block + i * per ))
     [ $skip -lt $total_blocks ] || break
     count=$(( per < total_blocks - skip ? per : total_blocks - skip ))
     skips+=($skip); counts+=($count)
@@ -246,8 +275,8 @@ upload_parallel() { # upload_parallel <local file> <remote dir> <size> <label>
   [ -z "$poller" ] || kill $poller 2>/dev/null
 
   if [ $ok -ne 1 ]; then
-    echo "parallel upload of $base failed; removing the partial file" >&2
-    ssh "$HOST" "rm -f -- $rtmp_q"
+    echo "parallel upload of $base failed" >&2
+    _fail
     return 1
   fi
 
@@ -255,14 +284,14 @@ upload_parallel() { # upload_parallel <local file> <remote dir> <size> <label>
   local rsize rsum lsum
   rsize=$(ssh "$HOST" "stat -c %s -- $rtmp_q")
   if [ "$rsize" != "$size" ]; then
-    echo "size mismatch on the server ($rsize != $size); removing the partial file" >&2
-    ssh "$HOST" "rm -f -- $rtmp_q"; return 1
+    echo "size mismatch on the server ($rsize != $size)" >&2
+    _fail; return 1
   fi
   rsum=$(ssh "$HOST" "sha256sum -- $rtmp_q" | cut -d' ' -f1)
   lsum=$(shasum -a 256 -- "$f" | cut -d' ' -f1)
   if [ "$rsum" != "$lsum" ]; then
-    echo "checksum mismatch after the parallel upload; removing the partial file" >&2
-    ssh "$HOST" "rm -f -- $rtmp_q"; return 1
+    echo "checksum mismatch after the parallel upload" >&2
+    _fail; return 1
   fi
   ssh "$HOST" "mv -f -- $rtmp_q $rfile_q"
 }
