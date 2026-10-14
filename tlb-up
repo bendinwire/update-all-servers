@@ -1,0 +1,96 @@
+#!/bin/bash
+set -euo pipefail
+# ---- Remote SSH target (see ~/.ssh/config alias) ----
+SSH_ALIAS="tlb-server"
+# ---- Service table: localport:remoteport:Name ----
+# Local ports are on your Mac; remote ports are on the Beelink.
+# Add or remove a service here and everything else follows.
+SERVICES="\
+18085:8085:Sabnzbd
+18989:8989:Sonarr
+17878:7878:Radarr
+19696:9696:Prowlarr
+14545:4545:Requestrr
+18080:8082:qBittorrent
+15299:5299:LazyLibrarian
+13030:3030:ReadMeABook"
+LOG="/tmp/tlb-tunnels.log"
+# Never die silently: set -e must always leave a trace on the terminal
+trap 'rc=$?; echo "tlb-up FAILED (exit $rc) at line $LINENO — see $LOG" >&2; exit $rc' ERR
+
+# Does a tunnel actually carry traffic? Any HTTP status means the remote
+# service answered; "000"/empty means nothing is listening on the far end.
+probe() {
+  local code
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$1/" 2>/dev/null) || true
+  [ -n "$code" ] && [ "$code" != "000" ]
+}
+
+command -v curl >/dev/null 2>&1 || { echo "ERROR: curl not found; cannot verify tunnels." >&2; exit 1; }
+
+# Optional: auto-clean old tunnels first
+tlb-down >/dev/null 2>&1 || true
+# Fail fast if anything is already listening, and build the -L flags
+SSH_ARGS=()
+for entry in $SERVICES; do
+  lport=${entry%%:*}; rest=${entry#*:}; rport=${rest%%:*}
+  # netstat, not lsof — lsof hangs on a stale SMB mount (see tlb-down)
+  holders=$(netstat -anv -p tcp 2>/dev/null | awk -v port="$lport" '$6 == "LISTEN" && $4 ~ ("[.]" port "$")')
+  if [ -n "$holders" ]; then
+    echo "ERROR: port $lport is already in use:" >&2
+    echo "$holders" >&2
+    exit 1
+  fi
+  SSH_ARGS+=(-L "127.0.0.1:${lport}:127.0.0.1:${rport}")
+done
+: > "$LOG"
+echo "[$(date)] starting tunnels to ${SSH_ALIAS}…" >>"$LOG"
+rc=0
+ssh -vv -E "$LOG" -N -f \
+  -o ExitOnForwardFailure=yes \
+  -o BatchMode=yes \
+  -o ConnectTimeout=8 \
+  -o ServerAliveInterval=60 \
+  -o ServerAliveCountMax=3 \
+  "${SSH_ARGS[@]}" \
+  "${SSH_ALIAS}" || rc=$?
+if [ "$rc" -ne 0 ]; then
+  echo "ERROR: ssh to ${SSH_ALIAS} failed (exit $rc)" >&2
+  echo "--- non-debug output from $LOG ---" >&2
+  grep -vE '^debug[0-9]+:' "$LOG" | tail -20 >&2 || true
+  echo "--- full verbose log: $LOG ---" >&2
+  exit "$rc"
+fi
+# Wait up to 15s for every tunnel to answer end-to-end. A -L forward binds
+# locally but only dials the remote on first use, so "port is listening"
+# proves nothing — probe through it instead.
+deadline=$((SECONDS + 15))
+while [ $SECONDS -lt $deadline ]; do
+  ok=1
+  for entry in $SERVICES; do
+    probe "${entry%%:*}" || { ok=0; break; }
+  done
+  [ "$ok" -eq 1 ] && break
+  sleep 0.3
+done
+# Final verify: report every service, pass or fail
+fail=0
+for entry in $SERVICES; do
+  lport=${entry%%:*}; rest=${entry#*:}; rport=${rest%%:*}; name=${rest#*:}
+  if probe "$lport"; then
+    printf "  OK    %-14s → http://localhost:%s\n" "$name" "$lport"
+  else
+    printf "  FAIL  %-14s → http://localhost:%s  (nothing answering on remote %s)\n" "$name" "$lport" "$rport"
+    fail=1
+  fi
+done
+if [ "$fail" -ne 0 ]; then
+  echo "ERROR: one or more tunnels are up locally but carry no traffic. See $LOG" >&2
+  exit 1
+fi
+echo "All tunnels active."
+# Uncomment to auto-open in Safari (macOS only)
+# if command -v open >/dev/null 2>&1; then
+#   open -a Safari "http://localhost:18085" || true
+#   # add others as needed
+# fi

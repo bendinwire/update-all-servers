@@ -1,0 +1,69 @@
+#!/bin/bash
+set -euo pipefail
+
+# Local ports (must match the service table in tlb-up)
+PORTS="18085 18989 17878 19696 14545 18080 15299 13030"
+
+# Never die silently
+trap 'rc=$?; echo "tlb-down FAILED (exit $rc) at line $LINENO" >&2; exit $rc' ERR
+
+# Is anything listening on a local TCP port? netstat, not lsof: lsof walks every
+# open file and blocks forever on a hung SMB mount (/Volumes/20TB went stale after
+# a VPN toggle on 2026-10-13 and froze tlb-up before it ever reached ssh).
+# netstat's pid column is useless here — it names the pre-fork parent of `ssh -f`,
+# which has exited — so tunnel PIDs come from the ssh command line instead.
+listening() {
+  netstat -anv -p tcp 2>/dev/null | awk -v port="$1" '$6 == "LISTEN" && $4 ~ ("[.]" port "$")' | grep -q .
+}
+tunnel_pids() { pgrep -f "ssh .*-L 127[.]0[.]0[.]1:$1:" 2>/dev/null || true; }
+
+# Collect our ssh tunnels; leave anything else on those ports alone.
+ssh_pids=""
+for p in $PORTS; do
+  pids=$(tunnel_pids "$p")
+  for pid in $pids; do
+    case " $ssh_pids " in
+      *" $pid "*) ;;
+      *) ssh_pids="$ssh_pids $pid" ;;
+    esac
+  done
+  if [ -z "$pids" ] && listening "$p"; then
+    echo "WARNING: port $p held by something other than a tlb ssh tunnel — not killing it" >&2
+  fi
+done
+
+if [ -n "$ssh_pids" ]; then
+  echo "Stopping tunnel ssh process(es):$ssh_pids"
+  kill $ssh_pids 2>/dev/null || true
+  # Wait for them to actually die, then escalate — SIGTERM is a request, not a result
+  alive=""
+  deadline=$((SECONDS + 5))
+  while [ $SECONDS -lt $deadline ]; do
+    alive=""
+    for pid in $ssh_pids; do
+      if kill -0 "$pid" 2>/dev/null; then alive="$alive $pid"; fi
+    done
+    if [ -z "$alive" ]; then break; fi
+    sleep 0.2
+  done
+  if [ -n "$alive" ]; then
+    echo "WARNING: SIGTERM ignored by:$alive — sending SIGKILL" >&2
+    kill -9 $alive 2>/dev/null || true
+    sleep 0.5
+  fi
+else
+  echo "No ssh tunnel listeners found on ports $PORTS."
+fi
+
+# Verify the ports are genuinely free rather than assuming the kill worked
+still=""
+for p in $PORTS; do
+  if listening "$p"; then still="$still $p"; fi
+done
+if [ -n "$still" ]; then
+  echo "ERROR: still listening after shutdown:$still" >&2
+  netstat -anv -p tcp 2>/dev/null | awk '$6 == "LISTEN"' | grep -E "[.]($(echo $still | tr ' ' '|')) " >&2 || true
+  exit 1
+fi
+
+echo "All tunnel ports clear."
