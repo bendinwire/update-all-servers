@@ -13,7 +13,8 @@ SERVICES="\
 14545:4545:Requestrr
 18080:8082:qBittorrent
 15299:5299:LazyLibrarian
-13030:3030:ReadMeABook"
+13030:3030:ReadMeABook
+18090:8090:Issuarr"
 LOG="/tmp/tlb-tunnels.log"
 # Never die silently: set -e must always leave a trace on the terminal
 trap 'rc=$?; echo "tlb-up FAILED (exit $rc) at line $LINENO — see $LOG" >&2; exit $rc' ERR

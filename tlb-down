@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Local ports (must match the service table in tlb-up)
-PORTS="18085 18989 17878 19696 14545 18080 15299 13030"
+PORTS="18085 18989 17878 19696 14545 18080 15299 13030 18090"
 
 # Never die silently
 trap 'rc=$?; echo "tlb-down FAILED (exit $rc) at line $LINENO" >&2; exit $rc' ERR
