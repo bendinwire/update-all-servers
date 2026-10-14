@@ -1,0 +1,338 @@
+#!/bin/zsh
+# Upload files to the private drop folder on thelatebar.com and print the URL.
+#   drop file.mp3 [more files...]
+#   drop -a "Author Name" FILE...   file under this author instead of guessing
+#   drop -l          list what is up there
+#   drop -d NAME     delete one file (bare name or Author/Name)
+#   drop --notify F  upload with live macOS progress notifications (used by the
+#                    Finder Quick Action, where there is no terminal to watch)
+# Files stay until deleted (drop -d, or Admin mode on the web page). Basic auth: family / lefty
+#
+# Books are filed by kind, then author: drop/files/audiobooks/<Author>/ for audio,
+# drop/files/epubs/<Author>/ for ebooks. A book is any audio/ebook file; the author
+# is the text after the LAST " - " in "Title - Author.ext". Folders are created on
+# the fly. A book whose name gives no usable author (no " - ", or an "author" with
+# digits like "Part 1 ...") lands loose in its kind folder; non-books (zips) stay in
+# the root. The web listing mirrors the folders, so the folder IS the organization.
+set -e
+
+HOST=dock
+REMOTE=drop/files
+BASE=https://thelatebar.com/bendinwire-drop
+
+# terminal-notifier would let progress update a single banner in place (shared
+# -group id) instead of stacking, which is why it is wired up here. It is OFF
+# because the Homebrew build is ad-hoc signed with no Team ID, never registers
+# in Notification Center, and macOS silently drops its notifications — verified
+# 2026-08-11 by an A/B test where only the osascript notification arrived. It
+# still exits 0, so its own output cannot be trusted as proof of delivery.
+# Flip to 1 only if terminal-notifier.app is re-signed with a real identity.
+USE_TERMINAL_NOTIFIER=0
+
+NOTIFIER=/opt/homebrew/bin/terminal-notifier
+GROUP=com.flexgames.tlbdrop
+
+if [ "$USE_TERMINAL_NOTIFIER" -eq 1 ] && [ -x "$NOTIFIER" ]; then
+  STEP=5      # replaces in place, so fine-grained is free
+else
+  NOTIFIER=""
+  STEP=25     # osascript stacks banners, so stay coarse
+fi
+
+# Below this size the updates all land at once and are just noise.
+MILESTONE_MIN_BYTES=$((10 * 1024 * 1024))
+
+NOTIFY=0
+AUTHOR_OVERRIDE=""
+
+notify() { # notify <message> [subtitle]
+  if [ -x "$NOTIFIER" ]; then
+    "$NOTIFIER" -title "TLB Drop" -subtitle "${2:-}" -message "$1" -group "$GROUP" >/dev/null 2>&1
+  else
+    osascript -e "display notification \"$1\" with title \"TLB Drop\"" >/dev/null 2>&1
+  fi
+}
+
+# Extensions that count as a book, by kind. Everything else stays in the root.
+AUDIO_EXT='mp3|m4b|m4a|aac|flac|ogg|opus|wav'
+EBOOK_EXT='epub|mobi|azw3|pdf'
+BOOK_EXT="${AUDIO_EXT}|${EBOOK_EXT}"
+
+# book_kind BASENAME -> "audiobooks" | "epubs" | nothing
+book_kind() {
+  local ext="${1:e:l}"
+  if [[ "$ext" =~ "^(${AUDIO_EXT})$" ]]; then printf audiobooks
+  elif [[ "$ext" =~ "^(${EBOOK_EXT})$" ]]; then printf epubs
+  fi
+}
+
+# book_author BASENAME -> prints the author folder, or nothing if it is not a
+# book or the name gives no usable author.
+book_author() {
+  local base="$1" ext stem author
+  ext="${base:e:l}"
+  [[ "$ext" =~ "^(${BOOK_EXT})$" ]] || return 0
+  stem="${base:r}"
+  [[ "$stem" == *" - "* ]] || return 0
+  author="${stem##* - }"
+  # Trim surrounding whitespace.
+  author="${author##[[:space:]]#}"
+  author="${author%%[[:space:]]#}"
+  [ -n "$author" ] || return 0
+  # "The Lincoln Highway, Part 1 - Part 1 The Lincoln Highway.m4b": the tail is
+  # not an author. Real author names essentially never contain digits.
+  [[ "$author" == *[0-9]* ]] && return 0
+  # Paranoia: a folder name must not be able to escape the drop.
+  [[ "$author" == *"/"* || "$author" == "."* ]] && return 0
+  printf '%s' "$author"
+}
+
+# Percent-encode one path segment for the printed link (spaces, and the few
+# characters that would otherwise break a URL in a chat message).
+urlenc() {
+  printf '%s' "$1" | sed -e 's/%/%25/g' -e 's/ /%20/g' -e 's/#/%23/g' -e 's/?/%3F/g' -e 's/&/%26/g'
+}
+
+while :; do
+  case "$1" in
+    -l|--list)
+      ssh "$HOST" "cd $REMOTE && find . -type f -printf '%10s  %TY-%Tm-%Td  %P\n' | sort -k3"
+      exit 0 ;;
+    -d|--delete)
+      shift
+      [ -n "$1" ] || { echo "usage: drop -d FILENAME | drop -d Author/FILENAME" >&2; exit 1; }
+      q=$(printf '%q' "$1")
+      # Either way, drop an author folder that just became empty.
+      if [[ "$1" == *"/"* ]]; then
+        ssh "$HOST" "rm -v -- $REMOTE/$q; find $REMOTE -mindepth 1 -type d -empty -delete"
+      else
+        # Bare name: find it wherever it was filed.
+        ssh "$HOST" "find $REMOTE -type f -name $q -print -delete; find $REMOTE -mindepth 1 -type d -empty -delete"
+      fi
+      exit 0 ;;
+    -a|--author)
+      shift
+      [ -n "$1" ] || { echo "usage: drop -a \"Author Name\" FILE..." >&2; exit 1; }
+      AUTHOR_OVERRIDE="$1"; shift ;;
+    -n|--notify)
+      NOTIFY=1; shift ;;
+    ""|-h|--help)
+      echo "usage: drop [-a AUTHOR] FILE...   |   drop -l   |   drop -d [Author/]FILENAME"
+      exit 0 ;;
+    *) break ;;
+  esac
+done
+
+human() { # bytes -> human readable
+  awk -v b="$1" 'BEGIN{ s="B KB MB GB"; split(s,u," "); i=1;
+    while (b>=1024 && i<4) { b/=1024; i++ }
+    printf (i==1 ? "%d %s" : "%.1f %s"), b, u[i] }'
+}
+
+# scp only prints its progress meter when it believes it is attached to a
+# terminal, so run it under `script` to hand it a pty, then parse the meter.
+# openrsync (which replaced rsync on macOS 15+) has no --info=progress2, which
+# is why this is done the hard way. Parsing uses zsh's built-in =~ rather than
+# grep/sed so we are not spawning two processes per meter update.
+#
+# The remote path is passed as ONE argument with its spaces intact: scp on
+# macOS 15+ speaks SFTP, so the remote side does not shell-expand it (verified
+# 2026-09-14 into "drop/files/Zz Test Author/"). Do not backslash-escape it.
+upload_notified() {
+  local f="$1" label="$2" size="$3" rdir="$4"
+  local steps=1
+  [ "$size" -ge "$MILESTONE_MIN_BYTES" ] || steps=0
+
+  script -q /dev/null scp "$f" "$HOST:$rdir/" 2>&1 \
+    | tr '\r' '\n' \
+    | { next=$STEP
+        while IFS= read -r line; do
+          [ "$steps" -eq 1 ] || continue
+          [[ $line =~ '([0-9]{1,3})%' ]] || continue
+          pct=$match[1]
+          [ "$pct" -ge 100 ] && continue
+          if [ "$pct" -ge "$next" ]; then
+            # Jump straight to the current bucket; a fast burst can skip several.
+            next=$(( (pct / STEP) * STEP + STEP ))
+            if [[ $line =~ '([0-9]+:[0-9]{2}(:[0-9]{2})?) ETA' ]]; then
+              notify "${pct}%  ·  $match[1] left" "$label"
+            else
+              notify "${pct}%" "$label"
+            fi
+          fi
+        done; }
+
+  return ${pipestatus[1]}
+}
+
+# ── Parallel upload ────────────────────────────────────────────────────────
+# Throughput to the server is capped PER CONNECTION (measured 2026-10-13: ~75 KB/s on one
+# ssh connection, and four connections gave four times that, while the line itself
+# carried ~1 MB/s). So big files go over several connections at once: the file is cut
+# into 1 MiB-aligned slices, each streamed by its own `dd | ssh dd` into a hidden temp
+# file on the server (written in place at its offset), then checked (size + sha256) and
+# renamed into place. The final name only ever appears complete. The BookDrop app finds
+# the progress/pause targets by walking this script's child processes (dd + ssh).
+PARALLEL_MIN_BYTES=$((32 * 1024 * 1024))
+PARALLEL_STREAMS=${DROP_STREAMS:-8}
+
+# Bytes pushed so far over this upload's ssh connections (netstat's per-socket tx counters).
+# The ssh processes are found by the DROPID=<this script's pid> tag in their remote command.
+parallel_sent() {
+  local pids
+  pids=$(pgrep -f "ssh .*DROPID=$$ " 2>/dev/null | tr '\n' ' ')
+  [ -n "$pids" ] || { echo 0; return; }
+  netstat -anv -p tcp 2>/dev/null | awk -v pids="$pids" '
+    BEGIN { n = split(pids, a, " "); for (i = 1; i <= n; i++) want["ssh:" a[i]] = 1 }
+    { for (i = 1; i <= NF; i++) if ($i in want) {
+        for (j = 1; j <= NF; j++) if ($j == "ESTABLISHED") { sum += $(j + 2); break }
+        break } }
+    END { print sum + 0 }'
+}
+
+upload_parallel() { # upload_parallel <local file> <remote dir> <size> <label>
+  local f="$1" rdir="$2" size="$3" label="$4"
+  local base; base=$(basename "$f")
+  local rtmp="$rdir/.${base}.partial"
+  local rtmp_q; rtmp_q=$(printf '%q' "$rtmp")
+  local rfile_q; rfile_q=$(printf '%q' "$rdir/$base")
+  local bs=1048576 n=$PARALLEL_STREAMS
+  local total_blocks=$(( (size + bs - 1) / bs ))
+  local per=$(( (total_blocks + n - 1) / n ))
+  local -a pids=() skips=() counts=()
+  local i skip count
+
+  ssh "$HOST" "rm -f -- $rtmp_q && truncate -s $size -- $rtmp_q" || { echo "could not create $rtmp on the server" >&2; return 1; }
+
+  _slice() { # _slice <skip> <count>: stream one slice, retrying up to 3 times
+    local k=$1 c=$2 tries=0
+    while [ $tries -lt 3 ]; do
+      if dd if="$f" bs=$bs skip=$k count=$c 2>/dev/null \
+         | ssh "$HOST" "DROPID=$$ dd of=$rtmp_q bs=1M seek=$k conv=notrunc 2>/dev/null"; then
+        return 0
+      fi
+      tries=$((tries + 1)); sleep 2
+    done
+    return 1
+  }
+
+  for (( i = 0; i < n; i++ )); do
+    skip=$(( i * per ))
+    [ $skip -lt $total_blocks ] || break
+    count=$(( per < total_blocks - skip ? per : total_blocks - skip ))
+    skips+=($skip); counts+=($count)
+    _slice $skip $count &
+    pids+=($!)
+  done
+
+  local poller=""
+  if [ "$NOTIFY" -eq 1 ] && [ "$size" -ge "$MILESTONE_MIN_BYTES" ]; then
+    (
+      next=$STEP
+      while sleep 3; do
+        sent=$(parallel_sent)
+        pct=$(( sent * 100 / size ))
+        if [ "$pct" -lt 100 ] && [ "$pct" -ge "$next" ]; then
+          next=$(( (pct / STEP) * STEP + STEP ))
+          notify "${pct}%" "$label"
+        fi
+      done
+    ) &
+    poller=$!
+  fi
+
+  local ok=1 pid
+  for pid in $pids; do wait $pid || ok=0; done
+  [ -z "$poller" ] || kill $poller 2>/dev/null
+
+  if [ $ok -ne 1 ]; then
+    echo "parallel upload of $base failed; removing the partial file" >&2
+    ssh "$HOST" "rm -f -- $rtmp_q"
+    return 1
+  fi
+
+  # Verify before the file gets its real name.
+  local rsize rsum lsum
+  rsize=$(ssh "$HOST" "stat -c %s -- $rtmp_q")
+  if [ "$rsize" != "$size" ]; then
+    echo "size mismatch on the server ($rsize != $size); removing the partial file" >&2
+    ssh "$HOST" "rm -f -- $rtmp_q"; return 1
+  fi
+  rsum=$(ssh "$HOST" "sha256sum -- $rtmp_q" | cut -d' ' -f1)
+  lsum=$(shasum -a 256 -- "$f" | cut -d' ' -f1)
+  if [ "$rsum" != "$lsum" ]; then
+    echo "checksum mismatch after the parallel upload; removing the partial file" >&2
+    ssh "$HOST" "rm -f -- $rtmp_q"; return 1
+  fi
+  ssh "$HOST" "mv -f -- $rtmp_q $rfile_q"
+}
+
+n=0
+total=$#
+for f in "$@"; do
+  n=$((n + 1))
+  [ -f "$f" ] || { echo "not a file: $f" >&2; exit 1; }
+  base=$(basename "$f")
+  size=$(stat -f %z "$f")
+
+  kind=$(book_kind "$base")
+  if [ -n "$AUTHOR_OVERRIDE" ] && [ -n "$kind" ]; then
+    author="$AUTHOR_OVERRIDE"
+  else
+    author=$(book_author "$base")
+  fi
+  if [ -n "$kind" ] && [ -n "$author" ]; then
+    rdir="$REMOTE/$kind/$author"
+    rel="$kind/$author/$base"
+  elif [ -n "$kind" ]; then
+    rdir="$REMOTE/$kind"
+    rel="$kind/$base"
+  else
+    rdir="$REMOTE"
+    rel="$base"
+  fi
+  rdir_q=$(printf '%q' "$rdir")
+  rel_q=$(printf '%q' "$REMOTE/$rel")
+
+  # The Quick Action invokes us once per file so a single bad file cannot abort
+  # the rest, so it passes the batch position through the environment instead.
+  if [ -n "$DROP_TOTAL" ] && [ "$DROP_TOTAL" -gt 1 ]; then
+    label="$base ($DROP_INDEX/$DROP_TOTAL)"
+  elif [ "$total" -gt 1 ]; then
+    label="$base ($n/$total)"
+  else
+    label="$base"
+  fi
+
+  # New author → new folder, made here so scp has somewhere to land.
+  ssh "$HOST" "mkdir -p -- $rdir_q"
+
+  if [ "$size" -ge "$PARALLEL_MIN_BYTES" ] && [ "$PARALLEL_STREAMS" -gt 1 ]; then
+    if [ "$NOTIFY" -eq 1 ]; then notify "Starting — $(human "$size")" "$label"
+    else echo "-> uploading $base ($(human "$size")) over $PARALLEL_STREAMS connections ..."; fi
+    upload_parallel "$f" "$rdir" "$size" "$label"
+  elif [ "$NOTIFY" -eq 1 ]; then
+    notify "Starting — $(human "$size")" "$label"
+    upload_notified "$f" "$label" "$size" "$rdir"
+  else
+    if [ -n "$kind" ]; then
+      echo "-> uploading $base ($(human "$size")) to ${rel%/*}/ ..."
+    else
+      echo "-> uploading $base ($(human "$size")) ..."
+    fi
+    scp "$f" "$HOST:$rdir/"
+  fi
+
+  # scp preserves the local mode; anything not world-readable is a 403 from the
+  # container's nginx user, so normalize it.
+  ssh "$HOST" "chmod 644 -- $rel_q"
+
+  url="$BASE"
+  for seg in "${(@s:/:)rel}"; do url="$url/$(urlenc "$seg")"; done
+  echo "$url"
+done
+
+if [ "$NOTIFY" -eq 0 ]; then
+  echo
+  echo "listing: $BASE/    (family / lefty)"
+fi
