@@ -3,6 +3,7 @@
 #   update_mac
 #   update_ohmyzsh_mac
 #   update_iterm_mac
+#   update_mas_mac
 
 #!/bin/zsh
 
@@ -59,6 +60,43 @@ fi
 EOF
 }
 
+update_mas_mac() {
+cat <<'EOF'
+# Mac App Store apps, via mas (installed from brew on first run). Listing is
+# unprivileged, but since mas 4.0 installing needs root (an installd change in
+# macOS 26.1 / 15.7.2 / 14.8.2), and the fleet has no passwordless sudo. So it
+# upgrades only where sudoers lets this user run mas with no password, and
+# otherwise just reports what's waiting. Needs the App Store signed in.
+if command -v brew >/dev/null 2>&1; then
+  echo ""
+  echo "🛍️ Checking App Store apps..."
+  if ! command -v mas >/dev/null 2>&1; then
+    echo "Installing mas..."
+    brew install mas >/tmp/mas-install.log 2>&1 || echo "⚠️ mas install failed. See /tmp/mas-install.log"
+  fi
+  if command -v mas >/dev/null 2>&1; then
+    mas outdated >/tmp/mas-outdated.log 2>&1
+    mas_rc=$?
+    mas_n=$(grep -cE '^ *[0-9]+ ' /tmp/mas-outdated.log)
+    if [ "$mas_rc" -ne 0 ]; then
+      echo "⚠️ mas outdated failed:"
+      cat /tmp/mas-outdated.log
+    elif [ "$mas_n" -eq 0 ]; then
+      echo "No App Store updates."
+    else
+      cat /tmp/mas-outdated.log
+      mas_bin=$(command -v mas)
+      if sudo -n -l "$mas_bin" upgrade >/dev/null 2>&1; then
+        sudo -n "$mas_bin" upgrade || echo "⚠️ mas upgrade failed"
+      else
+        echo "ℹ️  $mas_n App Store update(s) waiting; installing needs passwordless sudo for $mas_bin (see FLEET_UPDATER.md)."
+      fi
+    fi
+  fi
+fi
+EOF
+}
+
 update_mac() {
 cat <<EOF
 
@@ -85,6 +123,8 @@ else
 fi
 
 $(update_iterm_mac)
+
+$(update_mas_mac)
 
 $(update_ohmyzsh_mac)
 
